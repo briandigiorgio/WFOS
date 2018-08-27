@@ -628,10 +628,10 @@ def weightedconvolve(center, fiber, psf, intensity):
 
 #generate a velocity field of a galaxy and observe it with a fiber bundle
 #plot vel field, intensity, and fiber data, return data
-def vfobserve(vmax, i, h, pa = 0, fwhm = 5, noise = 50, size = 100, fmin = .01,
-        fmax = .2, returnz=False, f19 = False):
+def vfobserve(vmax, i, h, pa = 0, fwhm = 50, noise = False, var = True, 
+        size = 100, fmin = .01, fmax = .2, returnz=False, f19 = False):
     #parameters
-    h = size/3
+    #h = size/3
     if f19:
         size = int(size * 5/3)
     q = np.cos(np.radians(i))
@@ -647,7 +647,7 @@ def vfobserve(vmax, i, h, pa = 0, fwhm = 5, noise = 50, size = 100, fmin = .01,
 
     #make psf
     if fwhm:
-        xp = np.arange(fwhm*4)
+        xp = np.arange(fwhm*2)
         psf = moffat2(np.arange(0,fwhm*4), np.arange(0,fwhm*4), fwhm)
         psf /= psf.sum()
     else:
@@ -656,11 +656,18 @@ def vfobserve(vmax, i, h, pa = 0, fwhm = 5, noise = 50, size = 100, fmin = .01,
     #convolve psf with velocity field and brightness to blur
     if noise:
         nv = cnoise(v, fmin, fmax) #generate lumpy noise for velocity field
+    else:
+        nv = v
+
+    if fwhm:
         pv = convolve2d(nv, psf, mode = 'same', boundary = 'symm')
         b = convolve2d(b, psf, mode = 'same', boundary = 'symm')
         b /= b.max()
+    else:
+        pv = v
 
-        #plot vel field and intensity
+    #plot vel field and intensity
+    if returnz:
         plt.figure(figsize = (14,4))
         plt.subplot(131)
         plt.imshow(pv, cmap = 'RdBu')
@@ -670,8 +677,6 @@ def vfobserve(vmax, i, h, pa = 0, fwhm = 5, noise = 50, size = 100, fmin = .01,
         plt.imshow(b, cmap = 'bone')
         plt.colorbar()
 
-    else:
-        pv = v
 
     #define fiber radius
     r = size//3
@@ -706,18 +711,22 @@ def vfobserve(vmax, i, h, pa = 0, fwhm = 5, noise = 50, size = 100, fmin = .01,
 
     #do weighted convolution of each fiber to get vel measurement
     data = np.zeros(len(coords))
+    flux = np.zeros(len(coords))
     z = np.zeros_like(pv)
     for i in range(len(coords)):
         c = coords[i]
         data[i] = weightedconvolve(c, fiber, pv, b)
-        z = addfiber(data[i]*fiber, z, c)
+        flux[i] = convolve(c, fiber, b)
 
-    if noise:
-        error = np.array([1] + [5]*(len(coords)-1))
+    if var:
+        error = 1/np.sqrt(flux)
+        error /= np.min(error)
         data = addnoise(data,error)
 
     #plot fiber bundle showing data
     if returnz:
+        for i,c in enumerate(coords):
+            z = addfiber(data[i]*fiber, z, c)
         z = np.ma.array(z, mask = z==0)
         plt.subplot(133)
         plt.imshow(z, cmap = 'RdBu', vmin = data.min(), vmax = data.max())
@@ -728,13 +737,13 @@ def vfobserve(vmax, i, h, pa = 0, fwhm = 5, noise = 50, size = 100, fmin = .01,
 def vfdiff(guess, data, f19, error):
     if not error.all():
         error = np.ones_like(data)
-    return (data - vfobserve(*guess, fwhm=0, noise=0, f19=f19))/(error)
+    return (data - vfobserve(*guess, fwhm=0, noise=0, f19=f19, var = False))/(error)
 
 #do least squares fitting of vmax, inc, hrot, and pa for a given data set
 #from vfobserve, outputs plots, best fit, and errors
 def vfit(data, f19=False, guess = None, error = False, plot = True):
     if not guess:
-        guess = (100, 45, 20, 0)
+        guess = (100, 45, 50, 0)
 
     if error:
         try:

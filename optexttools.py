@@ -9,6 +9,7 @@ from matplotlib import colors, rc, cm
 from astropy.modeling import functional_models as dists
 from skimage.transform import resize
 from scipy.optimize import least_squares
+from glob import glob
 
 def gaussian(x, mean, std, norm = False):
     psf = (1/(std*np.sqrt(2*np.pi)))**np.exp(-1*((x-mean)**2)/(2*std**2))
@@ -17,7 +18,9 @@ def gaussian(x, mean, std, norm = False):
     else:
         return psf
 
-def addnoise(psf, noise):
+def addnoise(psf, noise, seed = 0):
+    if seed:
+        np.random.seed(seed)
     return psf + np.random.normal(0, noise, size = psf.shape)
 
 #returns a moffat psf centered at [x,y] = center evaluated at pos (2darray)
@@ -629,7 +632,7 @@ def weightedconvolve(center, fiber, psf, intensity):
 #generate a velocity field of a galaxy and observe it with a fiber bundle
 #plot vel field, intensity, and fiber data, return data
 def vfobserve(vmax, i, h, pa = 0, fwhm = 50, noise = False, var = True, 
-        size = 100, fmin = .01, fmax = .2, returnz=False, f19 = False):
+        size = 100, fmin = .01, fmax = .2, returnz=False, f19 = False, seed=0):
     #parameters
     #h = size/3
     if f19:
@@ -642,7 +645,7 @@ def vfobserve(vmax, i, h, pa = 0, fwhm = 50, noise = False, var = True,
     #make galaxy, velocity field, brightness map
     e = makeellipse(size, q)
     v = makevf(size, vmax, np.radians(i), np.radians(pa), h)
-    b = sersic(x, x, 1, h, inc = i, pa = pa)
+    b = sersic(x, x, 1, 1.5*h, inc = i, pa = pa)
     b /= b.max()
 
     #make psf
@@ -655,7 +658,7 @@ def vfobserve(vmax, i, h, pa = 0, fwhm = 50, noise = False, var = True,
 
     #convolve psf with velocity field and brightness to blur
     if noise:
-        nv = cnoise(v, fmin, fmax) #generate lumpy noise for velocity field
+        nv = cnoise(v, fmin, fmax, seed=seed) #generate lumpy noise for vf
     else:
         nv = v
 
@@ -721,7 +724,7 @@ def vfobserve(vmax, i, h, pa = 0, fwhm = 50, noise = False, var = True,
     if var:
         error = 1/np.sqrt(flux)
         error /= np.min(error)
-        data = addnoise(data,error)
+        data = addnoise(data,error,seed = seed)
 
     #plot fiber bundle showing data
     if returnz:
@@ -735,8 +738,19 @@ def vfobserve(vmax, i, h, pa = 0, fwhm = 50, noise = False, var = True,
 
 #find difference between data and another vf, used in vfit
 def vfdiff(guess, data, f19, error):
-    if not error.all():
+    noerr = False
+    try:
+        if not error.all():
+            noerr = True
+    except:
+        try:
+            if not error:
+                noerr = True
+        except:
+            pass
+    if noerr:
         error = np.ones_like(data)
+
     return (data - vfobserve(*guess, fwhm=0, noise=0, f19=f19, var = False))/(error)
 
 #do least squares fitting of vmax, inc, hrot, and pa for a given data set
@@ -770,7 +784,11 @@ def vfit(data, f19=False, guess = None, error = False, plot = True):
 
 #make spatially correlated noise by superimposing a bunch of 2D sine waves
 #random spatial frequencies between fmin and fmax, adjust as needed
-def cnoise(array, fmin, fmax, order = 100, amp = 1):
+def cnoise(array, fmin, fmax, seed=0, order = 100, amp = 1):
+    if seed:
+        print(seed)
+        np.random.seed(seed)
+
     x,y = makexy(len(array))
     z = np.zeros_like(x, dtype = float)
 
@@ -790,3 +808,26 @@ def makexy(size):
     x = np.dstack([np.arange(size)] * size)[0]
     return x, x.T
 
+def npyhist(target = 30, rng = None):
+    r = np.array([np.load(p) for p in glob('*.npy')])[:,0,:,:]
+    titles = ['19 Fiber, 20 degrees','19 Fiber, 45 degrees','19 Fiber, 70'
+        'degrees', ' 7 Fiber, 20 degrees','7 Fiber, 45 degrees', '7 Fiber, 70'
+        'degrees']
+    plt.figure(figsize = (12,8))
+
+    if not rng:
+        rng = (np.nanmin(r[:,:,-1])-target, np.nanmax(r[:,:,-1])-target)
+
+    for i in range(len(r)):
+        plt.subplot(231 + i)
+        pa = r[i][:,-1]
+        pan = pa[np.isfinite(pa)] - target
+        print(len(pan), pan.mean(), pan.std())
+        plt.hist(pan, bins = 30, range = rng)
+        plt.title(titles[i] + ', N = %s'%len(pan))
+        plt.xlabel('Std = %g'%pan.std())
+        plt.axvline(pan.mean(),c='k')
+        plt.axvline(pan.mean()+pan.std(), ls = '--',c='k')
+        plt.axvline(pan.mean()-pan.std(), ls = '--',c='k')
+    plt.tight_layout()
+    plt.show()

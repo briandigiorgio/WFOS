@@ -585,6 +585,13 @@ def sersic(x, y, n, a, I=1, center = None, inc = 0, pa = 0):
     r, th = polar(xi-center[0], yj-center[1], *np.radians((inc,-pa)))
     return I * np.exp((-r/a)**(1/n))
 
+def sersic2(size, n, a, I=1, center = None, inc = 0, pa = 0):
+    if not center:
+        center = [size/2,size/2]
+    xi,yj = makexy(size)
+    r, th = polar(xi-center[0], yj-center[1], *np.radians((inc,-pa)))
+    return I * np.exp((-r/a)**(1/n))
+
 #much more efficient than other moffat
 def moffat2(x, y, fwhm, beta = 2.9, center = None, norm = True):
     alpha = fwhm/(2*np.sqrt(2**(1/beta)-1))
@@ -638,23 +645,22 @@ def vfobserve(vmax, i, h, pa = 0, fwhm = 50, noise = False, var = True,
     if f19:
         size = int(size * 5/3)
     q = np.cos(np.radians(i))
-    x = np.arange(0,2*size)
     center = size
     cen = (center,center)
 
-    #make galaxy, velocity field, brightness map
-    e = makeellipse(size, q)
-    v = makevf(size, vmax, np.radians(i), np.radians(pa), h)
-    b = sersic(x, x, 1, 1.5*h, inc = i, pa = pa)
-    b /= b.max()
-
     #make psf
+    psfsize = fwhm * 2
     if fwhm:
-        xp = np.arange(fwhm*2)
-        psf = moffat2(np.arange(0,fwhm*4), np.arange(0,fwhm*4), fwhm)
+        xp = np.arange(psfsize)
+        psf = moffat2(xp, xp, fwhm)
         psf /= psf.sum()
     else:
         psf = [1]
+
+    #make galaxy, velocity field, brightness map
+    v = makevf(int(size+psfsize/2), vmax, np.radians(i), np.radians(pa), h)
+    b = sersic2(2*size+psfsize, 1, 1.5*h, inc = i, pa = pa)
+    b /= b.max()
 
     #convolve psf with velocity field and brightness to blur
     if noise:
@@ -668,6 +674,10 @@ def vfobserve(vmax, i, h, pa = 0, fwhm = 50, noise = False, var = True,
         b /= b.max()
     else:
         pv = v
+
+    if fwhm:
+        pv = pv[psfsize//2:-psfsize//2,psfsize//2:-psfsize//2]
+        b =   b[psfsize//2:-psfsize//2,psfsize//2:-psfsize//2]
 
     #plot vel field and intensity
     if returnz:
@@ -724,7 +734,7 @@ def vfobserve(vmax, i, h, pa = 0, fwhm = 50, noise = False, var = True,
     if var:
         error = 1/np.sqrt(flux)
         error /= np.min(error)
-        data = addnoise(data,error,seed = seed)
+        #data = addnoise(data,error,seed = seed)
 
     #plot fiber bundle showing data
     if returnz:
@@ -809,7 +819,9 @@ def makexy(size):
     return x, x.T
 
 def npyhist(target = 30, rng = None):
-    r = np.array([np.load(p) for p in glob('*.npy')])[:,0,:,:]
+    files = sorted(glob('*.npy'))
+    print(files)
+    r = np.array([np.load(p) for p in files])[:,0,:,:]
     titles = ['19 Fiber, 20 degrees','19 Fiber, 45 degrees','19 Fiber, 70'
         'degrees', ' 7 Fiber, 20 degrees','7 Fiber, 45 degrees', '7 Fiber, 70'
         'degrees']

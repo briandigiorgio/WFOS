@@ -568,10 +568,10 @@ def polar(x,y,i,pa):
     return r, theta
 
 #make an arctan velocity field with radius size at inclination i 
-#rotated at position angle pa with scale h and bulk vel b
-def makevf(size, vmax, i, pa, h, b=0):
+#rotated at position angle pa with scale h and bulk vel b, x&y offsets xo&yo
+def makevf(size, vmax, i, pa, h, b=0, xo = 0, yo = 0):
     vf = np.zeros((2*size, 2*size))
-    x,y = np.ogrid[-size:size, -size:size]
+    x,y = np.ogrid[-size-xo:size-xo, -size+yo:size+yo]
     r, theta = polar(x,y,i,-pa)
     return vmax * np.tanh(r/h) * np.cos(theta) * np.sin(i) + b
 
@@ -585,9 +585,8 @@ def sersic(x, y, n, a, I=1, center = None, inc = 0, pa = 0):
     r, th = polar(xi-center[0], yj-center[1], *np.radians((inc,-pa)))
     return I * np.exp((-r/a)**(1/n))
 
-def sersic2(size, n, a, I=1, center = None, inc = 0, pa = 0):
-    if not center:
-        center = [size/2,size/2]
+def sersic2(size, n, a, I=1, inc = 0, pa = 0, xo = 0, yo = 0):
+    center = [size/2+xo,size/2-yo]
     xi,yj = makexy(size)
     r, th = polar(xi-center[0], yj-center[1], *np.radians((inc,-pa)))
     return I * np.exp((-r/a)**(1/n))
@@ -639,7 +638,8 @@ def weightedconvolve(center, fiber, psf, intensity):
 #generate a velocity field of a galaxy and observe it with a fiber bundle
 #plot vel field, intensity, and fiber data, return data
 def vfobserve(vmax, i, h, pa = 0, fwhm = 50, noise = False, var = True, 
-        size = 100, fmin = .01, fmax = .2, returnz=False, f19 = False, seed=0):
+        size = 100, fmin = .01, fmax = .2, returnz=False, f19 = False, seed=0, 
+        offset = 0, reterr = False, dither = True):
     #parameters
     #h = size/3
     if f19:
@@ -658,8 +658,12 @@ def vfobserve(vmax, i, h, pa = 0, fwhm = 50, noise = False, var = True,
         psf = [1]
 
     #make galaxy, velocity field, brightness map
-    v = makevf(int(size+psfsize/2), vmax, np.radians(i), np.radians(pa), h)
-    b = sersic2(2*size+psfsize, 1, 1.5*h, inc = i, pa = pa)
+    rpa = np.radians(pa)
+    buffersize = max(psfsize, 10)
+    v = makevf(int(size+buffersize/2), vmax, np.radians(i), rpa, h, 
+            xo = offset * np.sin(rpa), yo = offset * np.cos(rpa))
+    b = sersic2(int(2*size+buffersize), 1, 1.5*h, inc = i, pa = pa,
+            xo = offset * np.sin(rpa), yo = offset * np.cos(rpa))
     b /= b.max()
 
     #convolve psf with velocity field and brightness to blur
@@ -675,10 +679,6 @@ def vfobserve(vmax, i, h, pa = 0, fwhm = 50, noise = False, var = True,
     else:
         pv = v
 
-    if fwhm:
-        pv = pv[psfsize//2:-psfsize//2,psfsize//2:-psfsize//2]
-        b =   b[psfsize//2:-psfsize//2,psfsize//2:-psfsize//2]
-
     #plot vel field and intensity
     if returnz:
         plt.figure(figsize = (14,4))
@@ -689,7 +689,6 @@ def vfobserve(vmax, i, h, pa = 0, fwhm = 50, noise = False, var = True,
         plt.subplot(132)
         plt.imshow(b, cmap = 'bone')
         plt.colorbar()
-
 
     #define fiber radius
     r = size//3
@@ -722,6 +721,22 @@ def vfobserve(vmax, i, h, pa = 0, fwhm = 50, noise = False, var = True,
             (center-3*r, int(center+r*r3)),
             (int(center-1.5*r), int(center+1.5*r*r3))]
 
+    coords = np.array(coords) + (buffersize//2,buffersize//2)
+
+    if dither:
+        d1 = coords + (int(r/2), int(r*r3/2))
+        d2 = coords + (-int(r/2), int(r*r3/2))
+        coords = np.append(coords, d1, axis = 0)
+        coords = np.append(coords, d2, axis = 0)
+        coords -= (0,int(r/r3))
+
+    #test = np.zeros_like(pv)
+    #for i in range(len(coords)):
+    #    test[coords[i,0],coords[i,1]] = 1
+    #plt.figure()
+    #plt.imshow(test)
+    #plt.show()
+
     #do weighted convolution of each fiber to get vel measurement
     data = np.zeros(len(coords))
     flux = np.zeros(len(coords))
@@ -731,10 +746,16 @@ def vfobserve(vmax, i, h, pa = 0, fwhm = 50, noise = False, var = True,
         data[i] = weightedconvolve(c, fiber, pv, b)
         flux[i] = convolve(c, fiber, b)
 
+    #if fwhm:
+    #    pv = pv[psfsize//2:-psfsize//2,psfsize//2:-psfsize//2]
+    #    b  =  b[psfsize//2:-psfsize//2,psfsize//2:-psfsize//2]
+    pv = pv[pv.shape[0]-size:pv.shape[0]+size]
+    b  =  b[b.shape[0]-size:b.shape[0]+size]
+
     if var:
         error = 1/np.sqrt(flux)
         error /= np.min(error)
-        #data = addnoise(data,error,seed = seed)
+        data = addnoise(data,error,seed = seed)
 
     #plot fiber bundle showing data
     if returnz:
@@ -742,12 +763,17 @@ def vfobserve(vmax, i, h, pa = 0, fwhm = 50, noise = False, var = True,
             z = addfiber(data[i]*fiber, z, c)
         z = np.ma.array(z, mask = z==0)
         plt.subplot(133)
-        plt.imshow(z, cmap = 'RdBu', vmin = data.min(), vmax = data.max())
+        vmax = max(abs(data.min()),abs(data.max()))
+        vmin = -vmax
+        plt.imshow(z, cmap = 'RdBu', vmin = vmin, vmax = vmax)
         plt.colorbar()
+
+    if reterr:
+        return [data, error]
     return data
 
 #find difference between data and another vf, used in vfit
-def vfdiff(guess, data, f19, error):
+def vfdiff(guess, data, f19, error, offset=0, dither = False):
     noerr = False
     try:
         if not error.all():
@@ -761,15 +787,16 @@ def vfdiff(guess, data, f19, error):
     if noerr:
         error = np.ones_like(data)
 
-    return (data - vfobserve(*guess, fwhm=0, noise=0, f19=f19, var = False))/(error)
+    return (data - vfobserve(*guess, fwhm=0, noise=0, f19=f19, var = False, 
+        offset = offset, dither = dither))/(error)
 
 #do least squares fitting of vmax, inc, hrot, and pa for a given data set
 #from vfobserve, outputs plots, best fit, and errors
-def vfit(data, f19=False, guess = None, error = False, plot = True):
+def vfit(data, error = False, f19=False, guess = None, plot = True, offset = 0,         dither = False):
     if not guess:
         guess = (100, 45, 50, 0)
 
-    if error:
+    if list(error):
         try:
             len(error)
         except:
@@ -778,7 +805,7 @@ def vfit(data, f19=False, guess = None, error = False, plot = True):
                 error += [5]*12
         error = np.array(error)
 
-    fit = least_squares(vfdiff, guess, args = [data, f19, error])
+    fit = least_squares(vfdiff, guess, args = [data, f19, error,offset,dither])
     if plot:
         print('vmax, inc, hrot, pa')
         plt.tight_layout()
@@ -825,21 +852,46 @@ def npyhist(target = 30, rng = None):
     titles = ['19 Fiber, 20 degrees','19 Fiber, 45 degrees','19 Fiber, 70'
         'degrees', ' 7 Fiber, 20 degrees','7 Fiber, 45 degrees', '7 Fiber, 70'
         'degrees']
-    plt.figure(figsize = (12,8))
+    spargs, figsize = makesubplots(len(r))
+    plt.figure(figsize = figsize)
 
     if not rng:
         rng = (np.nanmin(r[:,:,-1])-target, np.nanmax(r[:,:,-1])-target)
 
     for i in range(len(r)):
-        plt.subplot(231 + i)
+        plt.subplot(*spargs, i+1)
         pa = r[i][:,-1]
         pan = pa[np.isfinite(pa)] - target
         print(len(pan), pan.mean(), pan.std())
         plt.hist(pan, bins = 30, range = rng)
-        plt.title(titles[i] + ', N = %s'%len(pan))
+        plt.title(files[i] + ', N = %s'%len(pan))
         plt.xlabel('Std = %g'%pan.std())
         plt.axvline(pan.mean(),c='k')
         plt.axvline(pan.mean()+pan.std(), ls = '--',c='k')
         plt.axvline(pan.mean()-pan.std(), ls = '--',c='k')
     plt.tight_layout()
     plt.show()
+
+def makesubplots(n, vertical = False, figsize = 4):
+    if n <= 0:
+        raise Exception('Number of subplots must be more than 0')
+
+    if n == 1:
+        return [1,1]
+
+    if n%2:
+        n+=1
+    divisors = []
+    multiples = []
+    for i in range(1,n//2+1):
+        if not n%i:
+            divisors += [i]
+            multiples += [n//i]
+    divisors = np.array(divisors)
+    multiples = np.array(multiples)
+    index = np.argmin(np.abs(divisors - multiples))
+    args = np.sort((divisors[index],multiples[index]))
+
+    if vertical:
+        return args[::-1], args * figsize
+    return args, args[::-1] * figsize

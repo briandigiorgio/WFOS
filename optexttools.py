@@ -4,7 +4,7 @@ import time
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy import stats as stats
-from scipy.signal import convolve2d
+from scipy.signal import convolve2d, fftconvolve
 from matplotlib import colors, rc, cm
 from astropy.modeling import functional_models as dists
 from skimage.transform import resize
@@ -639,7 +639,7 @@ def weightedconvolve(center, fiber, psf, intensity):
 #plot vel field, intensity, and fiber data, return data
 def vfobserve(vmax, i, h, pa = 0, fwhm = 50, noise = False, var = True, 
         size = 100, fmin = .01, fmax = .2, returnz=False, f19 = False, seed=0, 
-        offset = 0, reterr = False, dither = True):
+        offset = 0, reterr = False, dither = True, noisenorm = 2):
     #parameters
     #h = size/3
     if f19:
@@ -654,8 +654,6 @@ def vfobserve(vmax, i, h, pa = 0, fwhm = 50, noise = False, var = True,
         xp = np.arange(psfsize)
         psf = moffat2(xp, xp, fwhm)
         psf /= psf.sum()
-    else:
-        psf = [1]
 
     #make galaxy, velocity field, brightness map
     rpa = np.radians(pa)
@@ -666,29 +664,24 @@ def vfobserve(vmax, i, h, pa = 0, fwhm = 50, noise = False, var = True,
             xo = offset * np.sin(rpa), yo = offset * np.cos(rpa))
     b /= b.max()
 
-    #convolve psf with velocity field and brightness to blur
+    #add spatially correlated noise if desired
     if noise:
-        nv = cnoise(v, fmin, fmax, seed=seed) #generate lumpy noise for vf
+        nv = cnoise(v, fmin, fmax, seed=seed)
     else:
         nv = v
 
+    #luminosity weighted psf blur of vel field, blur of brightness
     if fwhm:
-        pv = convolve2d(nv, psf, mode = 'same', boundary = 'symm')
-        b = convolve2d(b, psf, mode = 'same', boundary = 'symm')
+        #get sums of weights for weighted average, do weighted average
+        psfmask = np.ones_like(psf)
+        sums = fftconvolve(b, psfmask/psfmask.sum(), mode = 'same')
+        pv = fftconvolve(nv*b, psf, mode = 'same')/sums
+
+        #blur and renormalize sersic profile
+        b = fftconvolve(b, psf, mode = 'same')
         b /= b.max()
     else:
         pv = v
-
-    #plot vel field and intensity
-    if returnz:
-        plt.figure(figsize = (14,4))
-        plt.subplot(131)
-        plt.imshow(pv, cmap = 'RdBu')
-        plt.colorbar()
-
-        plt.subplot(132)
-        plt.imshow(b, cmap = 'bone')
-        plt.colorbar()
 
     #define fiber radius
     r = size//3
@@ -721,23 +714,19 @@ def vfobserve(vmax, i, h, pa = 0, fwhm = 50, noise = False, var = True,
             (center-3*r, int(center+r*r3)),
             (int(center-1.5*r), int(center+1.5*r*r3))]
 
+    #shift coords due to border
     coords = np.array(coords) + (buffersize//2,buffersize//2)
 
+    #dither fibers in equilateral triangle like MaNGA
     if dither:
         d1 = coords + (int(r/2), int(r*r3/2))
         d2 = coords + (-int(r/2), int(r*r3/2))
         coords = np.append(coords, d1, axis = 0)
         coords = np.append(coords, d2, axis = 0)
-        coords -= (0,int(r/r3))
+        coords -= (0,int(r/r3)) #recenter
 
-    #test = np.zeros_like(pv)
-    #for i in range(len(coords)):
-    #    test[coords[i,0],coords[i,1]] = 1
-    #plt.figure()
-    #plt.imshow(test)
-    #plt.show()
-
-    #do weighted convolution of each fiber to get vel measurement
+    #do weighted convolution of each fiber to get vel measurement for fiber
+    #also observe fluxes for S/N
     data = np.zeros(len(coords))
     flux = np.zeros(len(coords))
     z = np.zeros_like(pv)
@@ -746,28 +735,47 @@ def vfobserve(vmax, i, h, pa = 0, fwhm = 50, noise = False, var = True,
         data[i] = weightedconvolve(c, fiber, pv, b)
         flux[i] = convolve(c, fiber, b)
 
-    #if fwhm:
-    #    pv = pv[psfsize//2:-psfsize//2,psfsize//2:-psfsize//2]
-    #    b  =  b[psfsize//2:-psfsize//2,psfsize//2:-psfsize//2]
-    pv = pv[pv.shape[0]-size:pv.shape[0]+size]
-    b  =  b[b.shape[0]-size:b.shape[0]+size]
-
+    #add in gaussian noise based on S/N from flux
     if var:
+        #calculate error, normalize max to desired level (about 2)
         error = 1/np.sqrt(flux)
-        error /= np.min(error)
+        error = (error/np.min(error)) * noisenorm
+
+        #increase error if dithered because of shorter exposure
+        if dither:
+            error *= r3
+
         data = addnoise(data,error,seed = seed)
 
-    #plot fiber bundle showing data
+    #plot vel field and intensity
     if returnz:
+        #trim borders
+        pv = pv[pv.shape[0]//2-size:pv.shape[0]//2+size,
+                pv.shape[1]//2-size:pv.shape[1]//2+size]
+        b  =  b[ b.shape[0]//2-size: b.shape[0]//2+size, 
+                 b.shape[1]//2-size: b.shape[1]//2+size]
+
+        plt.figure(figsize = (14,4))
+        plt.subplot(131)
+        plt.imshow(pv, cmap = 'RdBu')
+        plt.colorbar()
+
+        plt.subplot(132)
+        plt.imshow(b, cmap = 'bone')
+        plt.colorbar()
+
+        #plot fiber bundle showing data, not great for dither
         for i,c in enumerate(coords):
             z = addfiber(data[i]*fiber, z, c)
-        z = np.ma.array(z, mask = z==0)
+        z = np.ma.array(z, mask = z==0)[z.shape[0]//2-size:z.shape[0]//2+size,
+                                        z.shape[1]//2-size:z.shape[1]//2+size]
         plt.subplot(133)
         vmax = max(abs(data.min()),abs(data.max()))
         vmin = -vmax
         plt.imshow(z, cmap = 'RdBu', vmin = vmin, vmax = vmax)
         plt.colorbar()
 
+    #return the error for weighting in vfit
     if reterr:
         return [data, error]
     return data

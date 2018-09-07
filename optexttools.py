@@ -782,6 +782,7 @@ def vfobserve(vmax, i, h, pa = 0, fwhm = 50, noise = False, var = True,
 
 #find difference between data and another vf, used in vfit
 def vfdiff(guess, data, f19, error, offset=0, dither = False):
+    #try to detect whether it has a real error value or not
     noerr = False
     try:
         if not error.all():
@@ -792,19 +793,23 @@ def vfdiff(guess, data, f19, error, offset=0, dither = False):
                 noerr = True
         except:
             pass
+    #set even weighting if no error
     if noerr:
         error = np.ones_like(data)
 
+    #find difference between data and iteration, weight data by error
     return (data - vfobserve(*guess, fwhm=0, noise=0, f19=f19, var = False, 
         offset = offset, dither = dither))/(error)
 
 #do least squares fitting of vmax, inc, hrot, and pa for a given data set
 #from vfobserve, outputs plots, best fit, and errors
+#can accept error data from vfobserve with vfit(*vfobserve(reterr = True))
 def vfit(data, error = False, f19=False, guess = None, plot = True, offset = 0,         dither = False):
+    #default guess and errors
     if not guess:
         guess = (100, 45, 50, 0)
 
-    if list(error):
+    if list(error): #still causes some issues
         try:
             len(error)
         except:
@@ -813,12 +818,16 @@ def vfit(data, error = False, f19=False, guess = None, plot = True, offset = 0, 
                 error += [5]*12
         error = np.array(error)
 
-    fit = least_squares(vfdiff, guess, args = [data, f19, error,offset,dither])
+    #do actual fit with appropriate parameters
+    fit = least_squares(vfdiff, guess, args = [data,f19,error,offset,dither])
+
+    #show previously made plots if desired, must have returnz = True
     if plot:
         print('vmax, inc, hrot, pa')
         plt.tight_layout()
         plt.show()
 
+    #try to calculate error, usually fails 
     try:
         err = np.sqrt(np.diagonal(np.linalg.inv(np.dot(fit.jac.T,fit.jac))))
     except:

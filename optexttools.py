@@ -830,20 +830,23 @@ def vfit(data, error = False, f19=False, guess = None, plot = True, offset = 0, 
 #make spatially correlated noise by superimposing a bunch of 2D sine waves
 #random spatial frequencies between fmin and fmax, adjust as needed
 def cnoise(array, fmin, fmax, seed=0, order = 100, amp = 1):
+    #mess with random seed to make subprocessed different
     if seed:
         print(seed)
         np.random.seed(seed)
 
+    #make grid of coordinates
     x,y = makexy(len(array))
     z = np.zeros_like(x, dtype = float)
 
+    #make a bunch of different 2D sine waves with random properties
     for i in range(order):
-        A = np.random.normal(amp, amp/3)
-        a = np.radians(np.random.uniform(0, 90))
-        xf = np.random.uniform(fmin, fmax)
-        yf = np.random.uniform(fmin, fmax)
-        xp = np.random.uniform(0,2*np.pi)
-        yp = np.random.uniform(0,2*np.pi)
+        A = np.random.normal(amp, amp/3) #amplitude
+        a = np.radians(np.random.uniform(0, 90)) #angle
+        xf = np.random.uniform(fmin, fmax) #x frequency
+        yf = np.random.uniform(fmin, fmax) #y frequency
+        xp = np.random.uniform(0,2*np.pi) #x phase
+        yp = np.random.uniform(0,2*np.pi) #y phase
         z += A * (np.cos(xf*x*np.cos(a) - yf*y*np.sin(a) + xp) 
             + np.sin(xf*x*np.sin(a) + yf*y*np.cos(a) + yp))
     return array + z
@@ -853,42 +856,58 @@ def makexy(size):
     x = np.dstack([np.arange(size)] * size)[0]
     return x, x.T
 
+#gets all of the npy files in the directory and plots histograms of PAs
+#assumes all npy files are from vfit
 def npyhist(target = 30, rng = None):
+    #load all files
     files = sorted(glob('*.npy'))
     print(files)
     r = np.array([np.load(p) for p in files])[:,0,:,:]
+
+    #default titles
     titles = ['19 Fiber, 20 degrees','19 Fiber, 45 degrees','19 Fiber, 70'
         'degrees', ' 7 Fiber, 20 degrees','7 Fiber, 45 degrees', '7 Fiber, 70'
         'degrees']
+
+    #make figures
     spargs, figsize = makesubplots(len(r))
     plt.figure(figsize = figsize)
 
+    #get appropriate range for histograms
     if not rng:
         rng = (np.nanmin(r[:,:,-1])-target, np.nanmax(r[:,:,-1])-target)
 
+    #for each file, pull out PAs that aren't nan, plot and print statistics
     for i in range(len(r)):
         plt.subplot(*spargs, i+1)
         pa = r[i][:,-1]
         pan = pa[np.isfinite(pa)] - target
         print(len(pan), pan.mean(), pan.std())
+
         plt.hist(pan, bins = 30, range = rng)
         plt.title(files[i] + ', N = %s'%len(pan))
         plt.xlabel('Std = %g'%pan.std())
         plt.axvline(pan.mean(),c='k')
         plt.axvline(pan.mean()+pan.std(), ls = '--',c='k')
         plt.axvline(pan.mean()-pan.std(), ls = '--',c='k')
+
     plt.tight_layout()
     plt.show()
 
+#for a given number of subplots, return arguments for plt.subplot to arrange 
+#them in the most compact way, defaults to horizontal
 def makesubplots(n, vertical = False, figsize = 4):
+    #check input
     if n <= 0:
         raise Exception('Number of subplots must be more than 0')
-
-    if n == 1:
+    elif n == 1:
         return [1,1]
 
+    #fix odd
     if n%2:
         n+=1
+
+    #find all numbers that go into n and what the complimentary multiple is
     divisors = []
     multiples = []
     for i in range(1,n//2+1):
@@ -897,9 +916,13 @@ def makesubplots(n, vertical = False, figsize = 4):
             multiples += [n//i]
     divisors = np.array(divisors)
     multiples = np.array(multiples)
+
+    #find the pair of numbers that is closest together (most square)
     index = np.argmin(np.abs(divisors - multiples))
     args = np.sort((divisors[index],multiples[index]))
 
+    #return tuples of rows and columns, used with plt.subplot(*args, i+1)
+    #also return figsize, used plt.figure(figsize = figsize)
     if vertical:
         return args[::-1], args * figsize
     return args, args[::-1] * figsize

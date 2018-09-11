@@ -3,6 +3,7 @@
 import time
 import numpy as np
 import matplotlib.pyplot as plt
+from astropy.io import fits
 from scipy import stats as stats
 from scipy.signal import convolve2d, fftconvolve
 from matplotlib import colors, rc, cm
@@ -633,64 +634,28 @@ def weightedconvolve(center, fiber, psf, intensity):
             center[1]-xoffset:center[1]+xoffset+odd[1]])
     weights = (fiber * intensity[center[0]-yoffset:center[0]+yoffset+odd[0],
             center[1]-xoffset:center[1]+xoffset+odd[1]])
-    return np.average(data, weights = weights)
+    try:
+        return np.average(data, weights = weights)
+    except:
+        print(weights.sum(), weights)
+        print(fiber.shape, center[0]-yoffset, center[0]+yoffset+odd[0],
+              center[1]-xoffset, center[1]+xoffset+odd[1])
+        raise Exception('Something wrong with weighted convolve')
 
-#generate a velocity field of a galaxy and observe it with a fiber bundle
-#plot vel field, intensity, and fiber data, return data
-def vfobserve(vmax, i, h, pa = 0, fwhm = 50, noise = False, var = True, 
-        size = 100, fmin = .01, fmax = .2, returnz=False, f19 = False, seed=0, 
-        offset = 0, reterr = False, dither = True, noisenorm = 2):
-    #parameters
-    #h = size/3
-    if f19:
-        size = int(size * 5/3)
-    q = np.cos(np.radians(i))
-    center = size
-    cen = (center,center)
-
-    #make psf
-    psfsize = fwhm * 2
-    if fwhm:
-        xp = np.arange(psfsize)
-        psf = moffat2(xp, xp, fwhm)
-        psf /= psf.sum()
-
-    #make galaxy, velocity field, brightness map
-    rpa = np.radians(pa)
-    buffersize = max(psfsize, 10)
-    v = makevf(int(size+buffersize/2), vmax, np.radians(i), rpa, h, 
-            xo = offset * np.sin(rpa), yo = offset * np.cos(rpa))
-    b = sersic2(int(2*size+buffersize), 1, 1.5*h, inc = i, pa = pa,
-            xo = offset * np.sin(rpa), yo = offset * np.cos(rpa))
-    b /= b.max()
-
-    #add spatially correlated noise if desired
-    if noise:
-        nv = cnoise(v, fmin, fmax, seed=seed)
-    else:
-        nv = v
-
-    #luminosity weighted psf blur of vel field, blur of brightness
-    if fwhm:
-        #get sums of weights for weighted average, do weighted average
-        psfmask = np.ones_like(psf)
-        sums = fftconvolve(b, psfmask/psfmask.sum(), mode = 'same')
-        pv = fftconvolve(nv*b, psf, mode = 'same')/sums
-
-        #blur and renormalize sersic profile
-        b = fftconvolve(b, psf, mode = 'same')
-        b /= b.max()
-    else:
-        pv = v
+#observe a velocity field pv weighted by brightness b with a fiber bundle
+#buffersize is border around outside from previous step
+#size is half of side length
+def bundleobserve(pv, b, size, buffersize, var = True, returnz = False, f19 = False, seed = 0, reterr = False, dither = False, noisenorm = 2):
 
     #define fiber radius
+    center = size
+    r3 = np.sqrt(3)
     r = size//3
     if f19:
         r = size//5
 
     #define fiber and coordinates of fibers in bundle
     #goes counterclockwise from +x axis, radially outwards
-    r3 = np.sqrt(3)
     fiber = makehex(r)
     coords = [(center,center), 
             (center, int(center+r*r3)), 
@@ -765,6 +730,9 @@ def vfobserve(vmax, i, h, pa = 0, fwhm = 50, noise = False, var = True,
         plt.colorbar()
 
         #plot fiber bundle showing data, not great for dither
+        if dither:
+            fiber = makehex(r//2)
+
         for i,c in enumerate(coords):
             z = addfiber(data[i]*fiber, z, c)
         z = np.ma.array(z, mask = z==0)[z.shape[0]//2-size:z.shape[0]//2+size,
@@ -779,6 +747,99 @@ def vfobserve(vmax, i, h, pa = 0, fwhm = 50, noise = False, var = True,
     if reterr:
         return [data, error]
     return data
+
+#generate a velocity field of a galaxy and observe it with a fiber bundle
+#plot vel field, intensity, and fiber data, return data
+def vfobserve(vmax, i, h, pa = 0, fwhm = 50, noise = False, var = True, 
+        size = 100, fmin = .01, fmax = .2, returnz=False, f19 = False, seed=0, 
+        offset = 0, reterr = False, dither = False, noisenorm = 2):
+    #parameters
+    if f19:
+        size = int(size * 5/3)
+
+    #make psf
+    psfsize = fwhm * 2
+    if fwhm:
+        xp = np.arange(psfsize)
+        psf = moffat2(xp, xp, fwhm)
+        psf /= psf.sum()
+
+    #make galaxy, velocity field, brightness map
+    rpa = np.radians(pa)
+    buffersize = max(psfsize, 10)
+    v = makevf(int(size+buffersize/2), vmax, np.radians(i), rpa, h, 
+            xo = offset * np.sin(rpa), yo = offset * np.cos(rpa))
+    b = sersic2(int(2*size+buffersize), 1, 1.5*h, inc = i, pa = pa,
+            xo = offset * np.sin(rpa), yo = offset * np.cos(rpa))
+    b /= b.max()
+
+    #add spatially correlated noise if desired
+    if noise:
+        nv = cnoise(v, fmin, fmax, seed=seed)
+    else:
+        nv = v
+
+    #luminosity weighted psf blur of vel field, blur of brightness
+    if fwhm:
+        #get sums of weights for weighted average, do weighted average
+        psfmask = np.ones_like(psf)
+        sums = fftconvolve(b, psfmask/psfmask.sum(), mode = 'same')
+        pv = fftconvolve(nv*b, psf, mode = 'same')/sums
+
+        #blur and renormalize sersic profile
+        b = fftconvolve(b, psf, mode = 'same')
+        b /= b.max()
+    else:
+        pv = v
+
+    return bundleobserve(pv, b, size, buffersize, var = var, returnz = returnz,
+            f19 = f19, seed = seed, reterr = reterr, dither = dither, 
+            noisenorm = noisenorm)
+
+#take a velocity field map vf and a flux map flux from a manga galaxy
+#and observe it with a fiber bundle
+def mangaobserve(vf, flux, fwhm = 0, var = True, returnz=False, f19 = False,
+        seed=0, offset = 0, reterr = False, dither = False, noisenorm = 2):
+    #load galaxies, trim outer edges
+    v = trimzeroes(np.load(vf))
+    b = trimzeroes(np.load(flux))
+    b /= b.max()
+
+    #parameters
+    size = v.shape[0]//2
+    if f19:
+        size = int(size * 5/3)
+
+    #make psf
+    psfsize = fwhm * 2
+    if fwhm:
+        xp = np.arange(psfsize)
+        psf = moffat2(xp, xp, fwhm)
+        psf /= psf.sum()
+
+    #make galaxy, velocity field, brightness map
+    buffersize = psfsize#max(psfsize, 10)
+    v = np.pad(v, buffersize, 'constant')
+    v = np.ma.array(v, mask = v==0)
+    b = np.pad(b, buffersize, 'constant')
+    b = np.ma.array(b, mask = b==0)
+
+    #luminosity weighted psf blur of vel field, blur of brightness
+    if fwhm:
+        #get sums of weights for weighted average, do weighted average
+        psfmask = np.ones_like(psf)
+        sums = fftconvolve(b, psfmask/psfmask.sum(), mode = 'same')
+        pv = fftconvolve(v*b, psf, mode = 'same')/sums
+
+        #blur and renormalize sersic profile
+        b = fftconvolve(b, psf, mode = 'same')
+        b /= b.max()
+    else:
+        pv = v
+
+    return bundleobserve(pv, b, size, buffersize, var = var, returnz = returnz,
+            f19 = f19, seed = seed, reterr = reterr, dither = dither, 
+            noisenorm = noisenorm)
 
 #find difference between data and another vf, used in vfit
 def vfdiff(guess, data, f19, error, offset=0, dither = False):
@@ -807,9 +868,9 @@ def vfdiff(guess, data, f19, error, offset=0, dither = False):
 def vfit(data, error = False, f19=False, guess = None, plot = True, offset = 0,         dither = False):
     #default guess and errors
     if not guess:
-        guess = (100, 45, 50, 0)
+        guess = (100, 45, 20, 0)
 
-    if list(error): #still causes some issues
+    if list([error]): #still causes some issues
         try:
             len(error)
         except:
@@ -935,3 +996,21 @@ def makesubplots(n, vertical = False, figsize = 4):
     if vertical:
         return args[::-1], args * figsize
     return args, args[::-1] * figsize
+
+#trim a border of zeroes from around the outside of an array
+def trimzeroes(array):
+    #look for empty rows and delete
+    r = np.ones(array.shape[0], dtype = bool)
+    for i in range(len(r)):
+        if not array[i,:].any():
+            r[i] = False
+    array = array[r,:]
+
+    #look for empty columns and delete
+    c = np.ones(array.shape[1], dtype = bool)
+    for i in range(len(c)):
+        if not array[:,i].any():
+            c[i] = False
+    array = array[:,c]
+    return array
+

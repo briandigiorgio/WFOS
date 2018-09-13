@@ -562,8 +562,13 @@ def shear(q, gp, gx):
 
 #transform x and y into polar for a galaxy inclined at i and rotated at pa
 def polar(x,y,i,pa):
-    xd = x*np.sin(pa) + y*np.cos(pa)
-    yd = (y*np.sin(pa) - x*np.cos(pa))/np.cos(i)
+    #counterclockwise from +x axis
+    #xd = x*np.sin(pa) + y*np.cos(pa)
+    #yd = (y*np.sin(pa) - x*np.cos(pa))/np.cos(i)
+
+    #counterclockwise from +y axis (marvin)
+    xd = y*np.sin(pa) - x*np.cos(pa)
+    yd = -(x*np.sin(pa) + y*np.cos(pa))/np.cos(i)
     r = np.sqrt(xd**2 + yd**2)
     theta = np.arctan2(-yd, xd)
     return r, theta
@@ -621,17 +626,29 @@ def vfrot(q,gx):
 
 #return the shapes of many arrays, just saves some typing
 def shapes(*arrays):
-    return [a.shape for a in arrays]
+    return np.array([a.shape for a in arrays])
 
 #do a light weighted average of the pixels within a fiber
-def weightedconvolve(center, fiber, psf, intensity):
+def weightedconvolve(center, fiber, psf, intensity, exceptions = False):
     odd = (fiber.shape[0]%2, fiber.shape[1]%2) #accounts for odd dimensions
     xoffset = fiber.shape[1]//2
     yoffset = fiber.shape[0]//2
+    if not exceptions:
+        data = (fiber * psf[center[0]-yoffset:center[0]+yoffset+odd[0],
+            center[1]-xoffset:center[1]+xoffset+odd[1]])
+        weights = (fiber * intensity[center[0]-yoffset:center[0]+yoffset+odd[0],
+                center[1]-xoffset:center[1]+xoffset+odd[1]])
+        return np.average(data, weights = weights)
 
     #pick out the appropriate pixels in psf and intensity and do weighted avg
-    data = (fiber * psf[center[0]-yoffset:center[0]+yoffset+odd[0],
+    try:
+        data = (fiber * psf[center[0]-yoffset:center[0]+yoffset+odd[0],
             center[1]-xoffset:center[1]+xoffset+odd[1]])
+    except:
+        print(center, fiber.shape, psf.shape, center[0]-yoffset, center[0]+yoffset+odd[0],
+              center[1]-xoffset, center[1]+xoffset+odd[1])
+        raise Exception('Something wrong with bounds in weighted convolve')
+
     weights = (fiber * intensity[center[0]-yoffset:center[0]+yoffset+odd[0],
             center[1]-xoffset:center[1]+xoffset+odd[1]])
     try:
@@ -640,19 +657,18 @@ def weightedconvolve(center, fiber, psf, intensity):
         print(weights.sum(), weights)
         print(fiber.shape, center[0]-yoffset, center[0]+yoffset+odd[0],
               center[1]-xoffset, center[1]+xoffset+odd[1])
-        raise Exception('Something wrong with weighted convolve')
+        raise Exception('Something wrong with weighted average')
 
 #observe a velocity field pv weighted by brightness b with a fiber bundle
 #buffersize is border around outside from previous step
 #size is half of side length
 def bundleobserve(pv, b, size, buffersize, var = True, returnz = False, f19 = False, seed = 0, reterr = False, dither = False, noisenorm = 2):
-
     #define fiber radius
     center = size
     r3 = np.sqrt(3)
     r = size//3
     if f19:
-        r = size//5
+        r = int(size/5)
 
     #define fiber and coordinates of fibers in bundle
     #goes counterclockwise from +x axis, radially outwards
@@ -695,8 +711,7 @@ def bundleobserve(pv, b, size, buffersize, var = True, returnz = False, f19 = Fa
     data = np.zeros(len(coords))
     flux = np.zeros(len(coords))
     z = np.zeros_like(pv)
-    for i in range(len(coords)):
-        c = coords[i]
+    for i,c in enumerate(coords):
         data[i] = weightedconvolve(c, fiber, pv, b)
         flux[i] = convolve(c, fiber, b)
 
@@ -722,7 +737,8 @@ def bundleobserve(pv, b, size, buffersize, var = True, returnz = False, f19 = Fa
 
         plt.figure(figsize = (14,4))
         plt.subplot(131)
-        plt.imshow(pv, cmap = 'RdBu')
+        vmax = max(abs(data.min()), abs(data.max()))
+        plt.imshow(-pv, cmap = 'RdBu', vmin = -vmax, vmax = vmax)
         plt.colorbar()
 
         plt.subplot(132)
@@ -734,13 +750,13 @@ def bundleobserve(pv, b, size, buffersize, var = True, returnz = False, f19 = Fa
             fiber = makehex(r//2)
 
         for i,c in enumerate(coords):
-            z = addfiber(data[i]*fiber, z, c)
+            z = addfiber(-data[i]*fiber, z, c)
         z = np.ma.array(z, mask = z==0)[z.shape[0]//2-size:z.shape[0]//2+size,
                                         z.shape[1]//2-size:z.shape[1]//2+size]
+
         plt.subplot(133)
         vmax = max(abs(data.min()),abs(data.max()))
-        vmin = -vmax
-        plt.imshow(z, cmap = 'RdBu', vmin = vmin, vmax = vmax)
+        plt.imshow(z, cmap = 'RdBu', vmin = -vmax, vmax = vmax)
         plt.colorbar()
 
     #return the error for weighting in vfit
@@ -798,19 +814,28 @@ def vfobserve(vmax, i, h, pa = 0, fwhm = 50, noise = False, var = True,
 
 #take a velocity field map vf and a flux map flux from a manga galaxy
 #and observe it with a fiber bundle
-def mangaobserve(vf, flux, fwhm = 0, var = True, returnz=False, f19 = False,
+def mangaobserve(plate, ifu, fwhm = 0, var = True, returnz=False, f19 = False,
         seed=0, offset = 0, reterr = False, dither = False, noisenorm = 2):
     #load galaxies, trim outer edges
-    v = trimzeroes(np.load(vf))
-    b = trimzeroes(np.load(flux))
+    try:
+        v = np.load('%s-%s_vf.npy' % (plate,ifu))
+        b = np.load('%s-%s_flux.npy' % (plate,ifu))
+    except:
+        v,b = getvfflux(plate,ifu)
+
+    v = trimzeroes(v)[::-1,:]
+    b = trimzeroes(b)[::-1,:]
     b /= b.max()
 
     #parameters
-    size = v.shape[0]//2
+    size = min(v.shape)//2
+
+    r = size//3
     if f19:
-        size = int(size * 5/3)
+        r = size//5
 
     #make psf
+    fwhm = 2*r * fwhm
     psfsize = fwhm * 2
     if fwhm:
         xp = np.arange(psfsize)
@@ -818,10 +843,10 @@ def mangaobserve(vf, flux, fwhm = 0, var = True, returnz=False, f19 = False,
         psf /= psf.sum()
 
     #make galaxy, velocity field, brightness map
-    buffersize = psfsize#max(psfsize, 10)
-    v = np.pad(v, buffersize, 'constant')
+    buffersize = max(psfsize, 10)
+    v = np.pad(v, int(buffersize/2), 'constant')
     v = np.ma.array(v, mask = v==0)
-    b = np.pad(b, buffersize, 'constant')
+    b = np.pad(b, int(buffersize/2), 'constant')
     b = np.ma.array(b, mask = b==0)
 
     #luminosity weighted psf blur of vel field, blur of brightness
@@ -870,14 +895,14 @@ def vfit(data, error = False, f19=False, guess = None, plot = True, offset = 0, 
     if not guess:
         guess = (100, 45, 20, 0)
 
-    if list([error]): #still causes some issues
-        try:
-            len(error)
-        except:
-            error = [1] + [5]*6
-            if f19:
-                error += [5]*12
-        error = np.array(error)
+    #if list([error]): #still causes some issues
+    #    try:
+    #        len(error)
+    #    except:
+    #        error = [1] + [5]*6
+    #        if f19:
+    #            error += [5]*12
+    #    error = np.array(error)
 
     #do actual fit with appropriate parameters
     fit = least_squares(vfdiff, guess, args = [data,f19,error,offset,dither])
@@ -1014,3 +1039,27 @@ def trimzeroes(array):
     array = array[:,c]
     return array
 
+#gets Halpha velocity field and flux maps for a given plate ifu
+#must be run inside graymalkin
+def getvfflux(plate, ifu, path = None):
+    if path == None:
+        path = '/data/manga/spectro/analysis/MPL-7/HYB10-GAU-MILESHC'
+    f = fits.open('%s/%s/%s/manga-%s-%s-MAPS-HYB10-GAU-MILESHC.fits.gz'
+            % (path,plate,ifu,plate,ifu))
+    vf = f[36].data[18]
+    flux = f[30].data[18]
+    return vf, flux
+
+#get guesses for parameters for vfit, must be run inside graymalkin
+def getguess(plate, ifu, path = None, p = False):
+    if path == None:
+        path = '/data/manga/digiorgio/HYB4/HYB10-GAU-MILESHC'
+    f = fits.open('%s/%s/%s/%s-%s-HYB10-GAU-MILESHC_vfdb.fits.gz' 
+            % (path,plate,ifu,plate,ifu))
+    vmax = f[12].header['G_VROT']
+    inc  = f[12].header['INC']
+    hrot = f[12].header['G_HROT']
+    pa   = f[12].header['PA']
+    if p:
+        print(vmax, inc, hrot, pa)
+    return (vmax, inc, hrot, pa)
